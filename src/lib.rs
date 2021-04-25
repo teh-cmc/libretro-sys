@@ -885,6 +885,86 @@ pub const ENVIRONMENT_GET_USERNAME: libc::c_uint = 38;
 // It can be used by the core for localization purposes.
 pub const ENVIRONMENT_GET_LANGUAGE: libc::c_uint = 39;
 
+// unsigned * --
+// Unsigned value is the API version number of the core options
+// interface supported by the frontend. If callback return false,
+// API version is assumed to be 0.
+//
+// In legacy code, core options are set by passing an array of
+// retro_variable structs to RETRO_ENVIRONMENT_SET_VARIABLES.
+// This may be still be done regardless of the core options
+// interface version.
+//
+// If version is >= 1 however, core options may instead be set by
+// passing an array of retro_core_option_definition structs to
+// RETRO_ENVIRONMENT_SET_CORE_OPTIONS, or a 2D array of
+// retro_core_option_definition structs to
+// RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL. This allows the core to additionally
+// set option sublabel information and/or provide localisation support.
+pub const RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: libc::c_uint = 52;
+
+// const struct retro_core_option_definition ** --
+// Allows an implementation to signal the environment
+// which variables it might want to check for later using
+// GET_VARIABLE.
+// This allows the frontend to present these variables to
+// a user dynamically.
+// This should only be called if RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION
+// returns an API version of >= 1.
+// This should be called instead of RETRO_ENVIRONMENT_SET_VARIABLES.
+// This should be called the first time as early as
+// possible (ideally in retro_set_environment).
+// Afterwards it may be called again for the core to communicate
+// updated options to the frontend, but the number of core
+// options must not change from the number in the initial call.
+//
+// 'data' points to an array of retro_core_option_definition structs
+// terminated by a { NULL, NULL, NULL, {{0}}, NULL } element.
+// retro_core_option_definition::key should be namespaced to not collide
+// with other implementations' keys. e.g. A core called
+// 'foo' should use keys named as 'foo_option'.
+// retro_core_option_definition::desc should contain a human readable
+// description of the key.
+// retro_core_option_definition::info should contain any additional human
+// readable information text that a typical user may need to
+// understand the functionality of the option.
+// retro_core_option_definition::values is an array of
+// retro_core_option_value structs terminated by a { NULL, NULL } element.
+// > retro_core_option_definition::values[index].value is an expected option
+//   value.
+// > retro_core_option_definition::values[index].label is a human readable
+//   label used when displaying the value on screen. If NULL,
+//   the value itself is used.
+// retro_core_option_definition::default_value is the default core option
+// setting. It must match one of the expected option values in the
+// retro_core_option_definition::values array. If it does not, or the
+// default value is NULL, the first entry in the
+// retro_core_option_definition::values array is treated as the default.
+//
+// The number of possible options should be very limited,
+// and must be less than RETRO_NUM_CORE_OPTION_VALUES_MAX.
+// i.e. it should be feasible to cycle through options
+// without a keyboard.
+//
+// Example entry:
+// {
+//     "foo_option",
+//     "Speed hack coprocessor X",
+//     "Provides increased performance at the expense of reduced accuracy",
+// 	  {
+//         { "false",    NULL },
+//         { "true",     NULL },
+//         { "unstable", "Turbo (Unstable)" },
+//         { NULL, NULL },
+//     },
+//     "false"
+// }
+//
+// Only strings are operated on. The possible values will
+// generally be displayed and stored as-is by the frontend.
+//
+pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS: libc::c_uint = 53;
+
 // struct Framebuffer * --
 // Returns a preallocated framebuffer which the core can use for rendering
 // the frame into when not using SET_HW_RENDER.
@@ -1909,6 +1989,14 @@ pub struct Variable {
     // Value to be obtained. If key does not exist, it is set to NULL.
     pub value: *const libc::c_char,
 }
+impl Default for Variable {
+    fn default() -> Self {
+        Self {
+            key: std::ptr::null(),
+            value: std::ptr::null(),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 #[repr(C)]
@@ -1968,6 +2056,68 @@ pub struct Framebuffer {
     // Flags telling core how the memory has been mapped. MEMORY_TYPE_* flags.
     // Set by frontend in GET_CURRENT_SOFTWARE_FRAMEBUFFER.
     pub memory_flags: libc::c_uint,
+}
+
+// Maximum number of values permitted for a core option
+// > Note: We have to set a maximum value due the limitations
+//   of the C language - i.e. it is not possible to create an
+//   array of structs each containing a variable sized array,
+//   so the retro_core_option_definition values array must
+//   have a fixed size. The size limit of 128 is a balancing
+//   act - it needs to be large enough to support all 'sane'
+//   core options, but setting it too large may impact low memory
+//   platforms. In practise, if a core option has more than
+//   128 values then the implementation is likely flawed.
+//   To quote the above API reference:
+//      "The number of possible options should be very limited
+//       i.e. it should be feasible to cycle through options
+//       without a keyboard."
+//
+pub const RETRO_NUM_CORE_OPTION_VALUES_MAX: libc::size_t = 128;
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct RetroCoreOptionValue {
+    // Expected option value
+    pub value: *const libc::c_char,
+    // Human-readable value label. If NULL, value itself
+    // will be displayed by the frontend
+    pub label: *const libc::c_char,
+}
+impl Default for RetroCoreOptionValue {
+    fn default() -> Self {
+        Self {
+            value: std::ptr::null(),
+            label: std::ptr::null(),
+        }
+    }
+}
+
+#[repr(C)]
+pub struct RetroCoreOptionDefinition {
+    // Variable to query in RETRO_ENVIRONMENT_GET_VARIABLE.
+    pub key: *const libc::c_char,
+    // Human-readable core option description (used as menu label)
+    pub desc: *const libc::c_char,
+    // Human-readable core option information (used as menu sublabel)
+    pub info: *const libc::c_char,
+    // Array of retro_core_option_value structs, terminated by NULL
+    pub values: [RetroCoreOptionValue; RETRO_NUM_CORE_OPTION_VALUES_MAX],
+    // Default core option value. Must match one of the values
+    // in the retro_core_option_value array, otherwise will be
+    // ignored
+    pub default_value: *const libc::c_char,
+}
+impl Default for RetroCoreOptionDefinition {
+    fn default() -> Self {
+        Self {
+            key: std::ptr::null(),
+            desc: std::ptr::null(),
+            info: std::ptr::null(),
+            values: [RetroCoreOptionValue::default(); RETRO_NUM_CORE_OPTION_VALUES_MAX],
+            default_value: std::ptr::null(),
+        }
+    }
 }
 
 // Callbacks
